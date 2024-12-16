@@ -28,7 +28,7 @@ async function run() {
     await client.connect();
 
     const serviceCollection = client.db("HotelDb").collection("features");
-
+    const bookingCollection = client.db("HotelDb").collection("bookings");
     app.get("/features", async (req, res) => {
       const cursor = serviceCollection.find();
       const result = await cursor.toArray();
@@ -57,6 +57,14 @@ async function run() {
         },
       };
       const result = await serviceCollection.findOne(query, options);
+      res.send(result);
+    });
+
+    // Bookings Information
+    app.post("/bookings", async (req, res) => {
+      const booking = req.body;
+      console.log(booking);
+      const result = await bookingCollection.insertOne(booking);
       res.send(result);
     });
 
