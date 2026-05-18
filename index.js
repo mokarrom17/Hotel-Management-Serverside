@@ -26,13 +26,32 @@ async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
-
+    const userCollection = client.db("HotelDb").collection("users");
     const serviceCollection = client.db("HotelDb").collection("features");
     const bookingCollection = client.db("HotelDb").collection("bookings");
     app.get("/features", async (req, res) => {
       const cursor = serviceCollection.find();
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    app.post("/users", async (req, res) => {
+      try {
+        const user = req.body;
+
+        const existingUser = await userCollection.findOne({
+          email: user.email,
+        });
+
+        if (existingUser) {
+          return res.send({ message: "User already exists", insertOne: null });
+        }
+        const result = await userCollection.insertOne(user);
+        res.send(result);
+      } catch (error) {
+        console.error("Error inserting user:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
     });
 
     app.get("/features/:id", async (req, res) => {
@@ -71,7 +90,7 @@ async function run() {
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
+      "Pinged your deployment. You successfully connected to MongoDB!",
     );
   } finally {
     // Ensures that the client will close when you finish/error
