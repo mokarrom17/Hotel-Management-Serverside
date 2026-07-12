@@ -1,2 +1,4 @@
 node_modules
 .env
+.hotel-management-firebase-adminsdk-.json
+hotel-management-firebase-adminsdk-*.json
