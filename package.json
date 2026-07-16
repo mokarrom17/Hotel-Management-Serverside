@@ -15,6 +15,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "firebase-admin": "^14.0.0",
-    "mongodb": "^6.9.0"
+    "mongodb": "^6.9.0",
+    "stripe": "^22.3.1"
   }
 }
