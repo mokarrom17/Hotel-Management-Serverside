@@ -24,38 +24,6 @@ initializeApp({
 app.use(cors());
 app.use(express.json());
 
-// Firebase Token Verify Middleware
-
-const verifyFBToken = async (req, res, next) => {
-  const token = req.headers.authorization;
-
-  console.log("Header Token:", token);
-
-  if (!token) {
-    return res.status(401).send({
-      message: "Unauthorized access",
-    });
-  }
-
-  try {
-    const idToken = token.split(" ")[1];
-
-    const decoded = await getAuth().verifyIdToken(idToken);
-
-    req.decoded_email = decoded.email;
-
-    console.log("Verified User:", req.decoded_email);
-
-    next();
-  } catch (error) {
-    console.log(error);
-
-    return res.status(403).send({
-      message: "Forbidden access",
-    });
-  }
-};
-
 const uri = `mongodb+srv://${process.env.HM_USER}:${process.env.HM_PASS}@cluster0.olgdgso.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 const client = new MongoClient(uri, {
@@ -77,6 +45,54 @@ async function run() {
     const bookingCollection = client.db("HotelDb").collection("bookings");
 
     const paymentCollection = client.db("HotelDb").collection("payments");
+
+    // Firebase Token Verify Middleware
+    const verifyFBToken = async (req, res, next) => {
+      const token = req.headers.authorization;
+
+      // console.log("Header Token:", token);
+
+      if (!token) {
+        return res.status(401).send({
+          message: "Unauthorized access",
+        });
+      }
+
+      try {
+        const idToken = token.split(" ")[1];
+
+        const decoded = await getAuth().verifyIdToken(idToken);
+
+        req.decoded_email = decoded.email;
+
+        console.log("Verified User:", req.decoded_email);
+
+        next();
+      } catch (error) {
+        console.log(error);
+
+        return res.status(403).send({
+          message: "Forbidden access",
+        });
+      }
+    };
+
+    // =========================
+    // Verify Admin Middleware
+    // =========================
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded_email;
+
+      const user = await userCollection.findOne({ email });
+
+      if (!user || user.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access - Admin only" });
+      }
+      next();
+    };
 
     // =========================
     // Rooms
@@ -104,6 +120,12 @@ async function run() {
     // Users
     // =========================
 
+    app.get("/users", verifyFBToken, async (req, res) => {
+      const cursor = userCollection.find();
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
     app.post("/users", async (req, res) => {
       try {
         const user = req.body;
@@ -126,6 +148,23 @@ async function run() {
           message: "Server Error",
         });
       }
+    });
+
+    app.patch("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const roleInfo = req.body;
+      const query = {
+        _id: new ObjectId(id),
+      };
+      const updateDoc = {
+        $set: {
+          role: roleInfo.role,
+        },
+      };
+
+      const result = await userCollection.updateOne(query, updateDoc);
+
+      res.send(result);
     });
 
     // =========================
@@ -175,6 +214,28 @@ async function run() {
 
       res.send(result);
     });
+
+    // =========================
+    // Check If User Is Admin
+    // Protected — user can only check their own role
+    // =========================
+    app.get("/users/admin/:email", verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+
+      if (email !== req.decoded_email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
+      const user = await userCollection.findOne({ email });
+
+      let admin = false;
+
+      if (user) {
+        admin = user?.role === "admin";
+      }
+      res.send({ admin });
+    });
+
     // =========================
     // Get Single Booking
     // Protected
