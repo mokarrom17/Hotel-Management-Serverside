@@ -42,6 +42,8 @@ async function run() {
 
     const serviceCollection = client.db("HotelDb").collection("roomTypes");
 
+    const roomCollection = client.db("HotelDb").collection("rooms");
+
     const bookingCollection = client.db("HotelDb").collection("bookings");
 
     const paymentCollection = client.db("HotelDb").collection("payments");
@@ -95,7 +97,7 @@ async function run() {
     };
 
     // =========================
-    // Rooms
+    // Rooms Types
     // =========================
 
     app.get("/roomTypes", async (req, res) => {
@@ -104,7 +106,7 @@ async function run() {
       res.send(result);
     });
 
-    // Single Room
+    // single Room
 
     app.get("/roomTypes/:id", async (req, res) => {
       const id = req.params.id;
@@ -117,10 +119,105 @@ async function run() {
     });
 
     // =========================
+    // Get All Rooms
+    // Search + Filter
+    // =========================
+
+    app.get("/rooms", async (req, res) => {
+      try {
+        const { search, roomType, floor, status } = req.query;
+
+        const query = {};
+
+        // Search by Room Number
+        if (search) {
+          query.roomNumber = {
+            $regex: search,
+            $options: "i",
+          };
+        }
+
+        // Filter by Room Type
+        if (roomType) {
+          query.roomTypeName = roomType;
+        }
+
+        // Filter by Floor
+        if (floor) {
+          query.floor = Number(floor);
+        }
+
+        // Filter by Availability
+        if (status === "available") {
+          query.isAvailable = true;
+        }
+
+        if (status === "booked") {
+          query.isAvailable = false;
+        }
+
+        // Filter by Maintenance
+        if (status === "maintenance") {
+          query.maintenanceStatus = {
+            $ne: "good",
+          };
+        }
+
+        const result = await roomCollection.find(query).toArray();
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({
+          message: "Failed to fetch rooms",
+        });
+      }
+    });
+    // Room Statistics
+
+    app.get("/rooms/stats", async (req, res) => {
+      try {
+        const totalRooms = await roomCollection.countDocuments();
+        const availableRooms = await roomCollection.countDocuments({
+          isAvailable: true,
+        });
+
+        const bookedRooms = await roomCollection.countDocuments({
+          isAvailable: false,
+        });
+
+        const maintenanceRooms = await roomCollection.countDocuments({
+          maintenanceStatus: {
+            $ne: "good",
+          },
+        });
+        res.send({
+          totalRooms,
+          availableRooms,
+          bookedRooms,
+          maintenanceRooms,
+        });
+      } catch (error) {
+        console.log(error);
+        res.status(500).send({
+          message: "Failed to load room statistics",
+        });
+      }
+    });
+    // Single Room
+    app.get("/rooms/:id", async (req, res) => {
+      const id = req.params.id;
+
+      const result = await roomCollection.findOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+    // =========================
     // Users
     // =========================
 
-    app.get("/users", verifyFBToken, async (req, res) => {
+    app.get("/users", async (req, res) => {
       const cursor = userCollection.find();
       const result = await cursor.toArray();
       res.send(result);
@@ -152,14 +249,14 @@ async function run() {
 
     app.patch("/users/:id", async (req, res) => {
       const id = req.params.id;
-      const roleInfo = req.body;
+      const updateData = req.body;
+
       const query = {
         _id: new ObjectId(id),
       };
+
       const updateDoc = {
-        $set: {
-          role: roleInfo.role,
-        },
+        $set: updateData,
       };
 
       const result = await userCollection.updateOne(query, updateDoc);

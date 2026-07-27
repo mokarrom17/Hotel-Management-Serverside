@@ -1,0 +1,11 @@
+// Update all users status to "active" if it does not exist
+await userCollection.updateMany(
+  { status: { $exists: false } },
+  {
+    $set: {
+      status: "active",
+    },
+  },
+);
+
+console.log("All users status updated successfully");
