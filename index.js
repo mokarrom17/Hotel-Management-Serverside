@@ -290,6 +290,25 @@ async function run() {
     });
 
     // =========================
+    // Get All Bookings (Admin)
+    // Protected
+    // =========================
+
+    app.get("/admin/bookings", async (req, res) => {
+      try {
+        const bookings = await bookingCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(bookings);
+      } catch (error) {
+        console.log(error);
+
+        res.status(500).send({ message: "Failed to fetch bookings" });
+      }
+    });
+
+    // =========================
     // Get User Bookings
     // Protected
     // =========================
