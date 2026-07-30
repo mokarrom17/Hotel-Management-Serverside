@@ -204,6 +204,85 @@ async function run() {
         });
       }
     });
+
+    // =========================
+    // Room Availability Summary (by room type)
+    // Public — used on the public RoomDetails page so guests
+    // can see how many rooms of a type are free, and on which
+    // floors / views, before they start a booking.
+    // =========================
+    app.get("/rooms/availability", async (req, res) => {
+      try {
+        const { roomType } = req.query;
+
+        if (!roomType) {
+          return res.status(400).send({
+            message: "roomType query parameter is required",
+          });
+        }
+
+        const availableRooms = await roomCollection
+          .find({ roomTypeName: roomType, isAvailable: true })
+          .toArray();
+
+        const floors = [
+          ...new Set(availableRooms.map((r) => r.floor).filter(Boolean)),
+        ].sort((a, b) => a - b);
+
+        const views = [
+          ...new Set(availableRooms.map((r) => r.view).filter(Boolean)),
+        ];
+
+        res.send({
+          availableCount: availableRooms.length,
+          floors,
+          views,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({
+          message: "Failed to load room availability",
+        });
+      }
+    });
+
+    // =========================
+    // Get Available Rooms By Type
+    // Public
+    // =========================
+    app.get("/rooms/available", async (req, res) => {
+      try {
+        const { roomType } = req.query;
+
+        if (!roomType) {
+          return res.status(400).send({
+            message: "roomType is required",
+          });
+        }
+
+        const rooms = await roomCollection
+          .find({
+            roomTypeName: roomType,
+            isAvailable: true,
+          })
+          .project({
+            roomNumber: 1,
+            floor: 1,
+            view: 1,
+            maintenanceStatus: 1,
+          })
+          .sort({ roomNumber: 1 })
+          .toArray();
+
+        res.send(rooms);
+      } catch (error) {
+        console.log(error);
+        res.status(500).send({
+          message: "Failed to load available rooms",
+        });
+      }
+    });
+
     // Single Room
     app.get("/rooms/:id", async (req, res) => {
       const id = req.params.id;
@@ -274,9 +353,8 @@ async function run() {
 
       booking.createdAt = new Date().toISOString();
 
-      // console.log("Booking email:", booking.customerEmail);
-
-      // console.log("Token email:", req.decoded_email);
+      booking.paymentStatus = booking.paymentStatus || "pending";
+      booking.bookingStatus = booking.bookingStatus || "pending";
 
       if (booking.customerEmail !== req.decoded_email) {
         return res.status(403).send({
@@ -308,6 +386,111 @@ async function run() {
       }
     });
 
+    // Confirm booking
+    app.patch(
+      "/admin/bookings/:id/confirm",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking not found",
+          });
+        }
+
+        if (
+          booking.bookingStatus === "confirmed" ||
+          booking.bookingStatus === "checked-in" ||
+          booking.bookingStatus === "checked-out"
+        ) {
+          return res.status(400).send({
+            message: "Booking is already confirmed.",
+          });
+        }
+
+        if (booking.bookingStatus === "cancelled") {
+          return res.status(400).send({
+            message: "Cancelled booking cannot be confirmed.",
+          });
+        }
+
+        const result = await bookingCollection.updateOne(
+          {
+            _id: new ObjectId(id),
+          },
+          {
+            $set: {
+              bookingStatus: "confirmed",
+              confirmedAt: new Date().toISOString(),
+            },
+          },
+        );
+
+        res.send(result);
+      },
+    );
+    // Cancel booking
+    app.patch(
+      "/admin/bookings/:id/cancel",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({
+            message: "Invalid booking ID",
+          });
+        }
+
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking not found",
+          });
+        }
+
+        // Already cancelled
+        if (booking.bookingStatus === "cancelled") {
+          return res.status(400).send({
+            message: "Booking is already cancelled.",
+          });
+        }
+
+        // Checked-in / Checked-out bookings cannot be cancelled
+        if (
+          booking.bookingStatus === "checked-in" ||
+          booking.bookingStatus === "checked-out"
+        ) {
+          return res.status(400).send({
+            message: "Checked-in or checked-out bookings cannot be cancelled.",
+          });
+        }
+
+        const result = await bookingCollection.updateOne(
+          {
+            _id: new ObjectId(id),
+          },
+          {
+            $set: {
+              bookingStatus: "cancelled",
+              cancelledAt: new Date().toISOString(),
+            },
+          },
+        );
+
+        res.send(result);
+      },
+    );
     // =========================
     // Get User Bookings
     // Protected
