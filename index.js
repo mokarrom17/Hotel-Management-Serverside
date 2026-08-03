@@ -386,7 +386,352 @@ async function run() {
       }
     });
 
+    // =========================
+    // Admin Dashboard Statistics
+    // Protected
+    // =========================
+
+    app.get(
+      "/admin/dashboard-stats",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          // Users
+          const totalUsers = await userCollection.countDocuments();
+          const totalAdmins = await userCollection.countDocuments({
+            role: "admin",
+          });
+          const totalStaff = await userCollection.countDocuments({
+            role: "staff",
+          });
+          const totalCustomers = await userCollection.countDocuments({
+            role: "customer",
+          });
+
+          // Rooms
+          const totalRooms = await roomCollection.countDocuments();
+
+          const availableRooms = await roomCollection.countDocuments({
+            isAvailable: true,
+          });
+
+          const bookedRooms = await roomCollection.countDocuments({
+            isAvailable: false,
+          });
+
+          const maintenanceRooms = await roomCollection.countDocuments({
+            maintenanceStatus: "maintenance",
+          });
+
+          // Bookings
+          const totalBookings = await bookingCollection.countDocuments();
+
+          const pendingBookings = await bookingCollection.countDocuments({
+            bookingStatus: "pending",
+          });
+
+          const confirmedBookings = await bookingCollection.countDocuments({
+            bookingStatus: "confirmed",
+          });
+
+          const checkedIn = await bookingCollection.countDocuments({
+            bookingStatus: "checked-in",
+          });
+
+          const checkedOut = await bookingCollection.countDocuments({
+            bookingStatus: "checked-out",
+          });
+
+          const cancelledBookings = await bookingCollection.countDocuments({
+            bookingStatus: "cancelled",
+          });
+
+          // Payments
+          const paidBookings = await bookingCollection.countDocuments({
+            paymentStatus: "paid",
+          });
+
+          const pendingPayments = await bookingCollection.countDocuments({
+            paymentStatus: "pending",
+          });
+
+          const failedPayments = await bookingCollection.countDocuments({
+            paymentStatus: "failed",
+          });
+
+          // Revenue
+          const revenue = await bookingCollection
+            .aggregate([
+              {
+                $match: {
+                  paymentStatus: "paid",
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  totalRevenue: {
+                    $sum: "$totalPrice",
+                  },
+                },
+              },
+            ])
+            .toArray();
+
+          const totalRevenue = revenue[0]?.totalRevenue || 0;
+
+          res.send({
+            totalUsers,
+            totalAdmins,
+            totalStaff,
+            totalCustomers,
+
+            totalRooms,
+            availableRooms,
+            bookedRooms,
+            maintenanceRooms,
+
+            totalBookings,
+            pendingBookings,
+            confirmedBookings,
+            checkedIn,
+            checkedOut,
+            cancelledBookings,
+
+            paidBookings,
+            pendingPayments,
+            failedPayments,
+
+            totalRevenue,
+          });
+        } catch (error) {
+          res.status(500).send({
+            message: "Failed to load dashboard statistics.",
+          });
+        }
+      },
+    );
+
+    // =========================
+    // Revenue Chart Data
+    // Protected
+    // =========================
+
+    app.get(
+      "/admin/revenue-chart",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const revenue = await bookingCollection
+            .aggregate([
+              {
+                $match: {
+                  paymentStatus: "paid",
+                },
+              },
+              {
+                $group: {
+                  _id: {
+                    month: {
+                      $month: {
+                        $toDate: "$createdAt",
+                      },
+                    },
+                  },
+                  revenue: {
+                    $sum: "$totalPrice",
+                  },
+                },
+              },
+              {
+                $sort: {
+                  "_id.month": 1,
+                },
+              },
+            ])
+            .toArray();
+
+          const monthNames = [
+            "",
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+          ];
+
+          const formatted = revenue.map((item) => ({
+            month: monthNames[item._id.month],
+            revenue: item.revenue,
+          }));
+
+          res.send(formatted);
+        } catch (error) {
+          console.log(error);
+          res.status(500).send({
+            message: "Failed to load revenue chart.",
+          });
+        }
+      },
+    );
+    // =========================
+    // Booking Trend Chart Data
+    // Protected
+    // =========================
+    app.get(
+      "/admin/booking-trend",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const bookings = await bookingCollection
+            .aggregate([
+              {
+                $addFields: {
+                  bookingDate: {
+                    $toDate: "$createdAt",
+                  },
+                },
+              },
+              {
+                $group: {
+                  _id: {
+                    month: {
+                      $month: "$bookingDate",
+                    },
+                  },
+                  bookings: {
+                    $sum: 1,
+                  },
+                },
+              },
+              {
+                $sort: {
+                  "_id.month": 1,
+                },
+              },
+            ])
+            .toArray();
+
+          const months = [
+            "",
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+          ];
+
+          const formatted = bookings.map((item) => ({
+            month: months[item._id.month],
+            bookings: item.bookings,
+          }));
+
+          res.send(formatted);
+        } catch (error) {
+          console.log(error);
+
+          res.status(500).send({
+            message: "Failed to load booking trend.",
+          });
+        }
+      },
+    );
+
+    // =========================
+    // Occupancy Rate
+    // Protected
+    // =========================
+
+    app.get(
+      "/admin/occupancy",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const totalRooms = await roomCollection.countDocuments();
+
+          const availableRooms = await roomCollection.countDocuments({
+            isAvailable: true,
+          });
+
+          const bookedRooms = await roomCollection.countDocuments({
+            isAvailable: false,
+          });
+
+          const maintenanceRooms = await roomCollection.countDocuments({
+            maintenanceStatus: "maintenance",
+          });
+
+          const occupancyRate =
+            totalRooms === 0
+              ? 0
+              : Number(((bookedRooms / totalRooms) * 100).toFixed(1));
+
+          res.send({
+            totalRooms,
+            availableRooms,
+            bookedRooms,
+            maintenanceRooms,
+            occupancyRate,
+          });
+        } catch (error) {
+          console.log(error);
+
+          res.status(500).send({
+            message: "Failed to load occupancy.",
+          });
+        }
+      },
+    );
+
+    // =========================
+    // Recent Bookings
+    // Protected
+    // =========================
+
+    app.get(
+      "/admin/recent-bookings",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const recentBookings = await bookingCollection
+            .find({})
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .toArray();
+
+          res.send(recentBookings);
+        } catch (error) {
+          console.log(error);
+
+          res.status(500).send({
+            message: "Failed to load recent bookings.",
+          });
+        }
+      },
+    );
+
+    // ===================================
     // Confirm booking
+    // ===================================
     app.patch(
       "/admin/bookings/:id/confirm",
       verifyFBToken,
@@ -435,7 +780,9 @@ async function run() {
         res.send(result);
       },
     );
+    // ===================================
     // Cancel booking
+    // ===================================
     app.patch(
       "/admin/bookings/:id/cancel",
       verifyFBToken,
@@ -484,6 +831,102 @@ async function run() {
             $set: {
               bookingStatus: "cancelled",
               cancelledAt: new Date().toISOString(),
+            },
+          },
+        );
+
+        res.send(result);
+      },
+    );
+    // =====================================
+    // Check-In booking
+    // =====================================
+    app.patch(
+      "/admin/bookings/:id/check-in",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({
+            message: "Invalid booking ID",
+          });
+        }
+
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking not found",
+          });
+        }
+
+        // Only confirmed bookings can be checked in
+        if (booking.bookingStatus !== "confirmed") {
+          return res.status(400).send({
+            message: "Only confirmed bookings can be checked in.",
+          });
+        }
+
+        const result = await bookingCollection.updateOne(
+          {
+            _id: new ObjectId(id),
+          },
+          {
+            $set: {
+              bookingStatus: "checked-in",
+              checkedInAt: new Date().toISOString(),
+            },
+          },
+        );
+
+        res.send(result);
+      },
+    );
+    // ====================================
+    // Check-Out booking
+    // ====================================
+    app.patch(
+      "/admin/bookings/:id/check-out",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({
+            message: "Invalid booking ID",
+          });
+        }
+
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking not found",
+          });
+        }
+
+        // Only checked-in bookings can be checked out
+        if (booking.bookingStatus !== "checked-in") {
+          return res.status(400).send({
+            message: "Only checked-in bookings can be checked out.",
+          });
+        }
+
+        const result = await bookingCollection.updateOne(
+          {
+            _id: new ObjectId(id),
+          },
+          {
+            $set: {
+              bookingStatus: "checked-out",
+              checkedOutAt: new Date().toISOString(),
             },
           },
         );
