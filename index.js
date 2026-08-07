@@ -512,6 +512,80 @@ async function run() {
         }
       },
     );
+    // ==========================
+    // Today's Summary
+    // Protected
+    // ==========================
+    app.get(
+      "/admin/today-summary",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const today = new Date();
+
+          const startOfDay = new Date(today);
+          startOfDay.setHours(0, 0, 0, 0);
+
+          const endOfDay = new Date(today);
+          endOfDay.setHours(23, 59, 59, 999);
+
+          const todayString = today.toISOString().split("T")[0];
+
+          const todayBookings = await bookingCollection.countDocuments({
+            createdAt: {
+              $gte: startOfDay.toISOString(),
+              $lte: endOfDay.toISOString(),
+            },
+          });
+
+          const revenue = await bookingCollection
+            .aggregate([
+              {
+                $match: {
+                  paymentStatus: "paid",
+                  paidAt: {
+                    $gte: startOfDay,
+                    $lte: endOfDay,
+                  },
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  todayRevenue: {
+                    $sum: "$totalPrice",
+                  },
+                },
+              },
+            ])
+            .toArray();
+
+          const todayRevenue = revenue[0]?.todayRevenue || 0;
+
+          const todayCheckIns = await bookingCollection.countDocuments({
+            checkIn: todayString,
+          });
+
+          const todayCheckOuts = await bookingCollection.countDocuments({
+            checkOut: todayString,
+          });
+
+          res.send({
+            todayRevenue,
+            todayBookings,
+            todayCheckIns,
+            todayCheckOuts,
+          });
+        } catch (error) {
+          console.log(error);
+
+          res.status(500).send({
+            message: "Failed to load today's summary.",
+          });
+        }
+      },
+    );
 
     // =========================
     // Revenue Chart Data
