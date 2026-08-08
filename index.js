@@ -326,7 +326,7 @@ async function run() {
       }
     });
 
-    app.patch("/users/:id", async (req, res) => {
+    app.patch("/users/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const updateData = req.body;
 
@@ -372,7 +372,7 @@ async function run() {
     // Protected
     // =========================
 
-    app.get("/admin/bookings", async (req, res) => {
+    app.get("/admin/bookings", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const bookings = await bookingCollection
           .find()
@@ -1032,24 +1032,27 @@ async function run() {
     });
 
     // =========================
-    // Check If User Is Admin
-    // Protected — user can only check their own role
+    // Get User Role
     // =========================
-    app.get("/users/admin/:email", verifyFBToken, async (req, res) => {
+    app.get("/users/role/:email", verifyFBToken, async (req, res) => {
       const email = req.params.email;
 
       if (email !== req.decoded_email) {
         return res.status(403).send({ message: "Forbidden access" });
       }
 
-      const user = await userCollection.findOne({ email });
+      const user = await userCollection.findOne(
+        { email },
+        { projection: { role: 1 } },
+      );
 
-      let admin = false;
-
-      if (user) {
-        admin = user?.role === "admin";
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
       }
-      res.send({ admin });
+
+      res.send({
+        role: user.role || "customer",
+      });
     });
 
     // =========================
