@@ -296,13 +296,13 @@ async function run() {
     // Users
     // =========================
 
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyFBToken, async (req, res) => {
       const cursor = userCollection.find();
       const result = await cursor.toArray();
       res.send(result);
     });
 
-    app.post("/users", async (req, res) => {
+    app.post("/users", verifyFBToken, async (req, res) => {
       try {
         const user = req.body;
 
@@ -325,8 +325,11 @@ async function run() {
         });
       }
     });
-
-    app.patch("/users/:id", verifyFBToken, verifyAdmin, async (req, res) => {
+    // =========================
+    // Update User Role
+    // Protected
+    // =========================
+    app.patch("/users/:id", verifyFBToken, async (req, res) => {
       const id = req.params.id;
       const updateData = req.body;
 
@@ -1008,6 +1011,85 @@ async function run() {
         res.send(result);
       },
     );
+
+    // =========================
+    // Cancel Booking
+    // Protected
+    // =========================
+    app.patch(
+      "/bookings/:id/cancel",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const userEmail = req.decoded_email;
+
+          const booking = await bookingCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          // Booking not found
+          if (!booking) {
+            return res.status(404).send({
+              message: "Booking not found",
+            });
+          }
+
+          // check booking ownership
+          if (booking.customerEmail !== userEmail) {
+            return res.status(403).send({
+              message: "You can only cancel your own booking",
+            });
+          }
+
+          // Already cancelled
+          if (booking.bookingStatus === "cancelled") {
+            return res.status(400).send({
+              message: "Booking is already cancelled",
+            });
+          }
+
+          // Already checked in
+          if (booking.bookingStatus === "checked-in") {
+            return res.status(400).send({
+              message: "Checked-in booking cannot be cancelled",
+            });
+          }
+
+          // Already Completed
+          if (booking.bookingStatus === "checked-out") {
+            return res.status(400).send({
+              message: "Complete booking cannot be cancelled",
+            });
+          }
+
+          const result = await bookingCollection.updateOne(
+            {
+              _id: new ObjectId(id),
+              customerEmail: userEmail,
+            },
+
+            {
+              $set: {
+                bookingStatus: "cancelled",
+                cancelledAt: new Date().toISOString(),
+              },
+            },
+          );
+          res.send({
+            message: "Booking cancelled successfully.",
+            result,
+          });
+        } catch (error) {
+          console.error("Cancel booking error : ", error);
+
+          res.status(500).send({
+            message: "Failed to cancel booking.",
+          });
+        }
+      },
+    );
     // =========================
     // Get User Bookings
     // Protected
@@ -1054,6 +1136,8 @@ async function run() {
         role: user.role || "customer",
       });
     });
+
+    console.log("USER ROLE ROUTE REGISTERED");
 
     // =========================
     // Get Single Booking
@@ -1143,6 +1227,116 @@ async function run() {
       });
 
       res.send(updateResult);
+    });
+
+    // =========================
+    // User Dashboard Statistics
+    // Protected
+    // =========================
+    app.get("/user/dashboard-stats", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const bookings = await bookingCollection
+          .find({ customerEmail: email })
+          .toArray();
+
+        const totalBookings = bookings.length;
+
+        const upcomingStays = bookings.filter((booking) => {
+          const checkIn = new Date(booking.checkIn);
+          checkIn.setHours(0, 0, 0, 0);
+
+          return checkIn >= today && booking.bookingStatus !== "cancelled";
+        }).length;
+
+        const completedStays = bookings.filter((booking) => {
+          const checkOut = new Date(booking.checkOut);
+          checkOut.setHours(0, 0, 0, 0);
+
+          return checkOut < today && booking.bookingStatus !== "cancelled";
+        }).length;
+
+        const totalSpent = bookings
+          .filter((booking) => booking.paymentStatus === "paid")
+          .reduce((total, booking) => {
+            return total + Number(booking.totalPrice || 0);
+          }, 0);
+
+        res.send({
+          totalBookings,
+          upcomingStays,
+          completedStays,
+          totalSpent,
+        });
+      } catch (error) {
+        console.error("User dashboard stats error:", error);
+
+        res.status(500).send({
+          message: "Failed to load dashboard statistics.",
+        });
+      }
+    });
+
+    // =========================
+    // Upcoming Booking
+    // Protected
+    // =========================
+    app.get("/user/upcoming-booking", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const today = new Date().toISOString().split("T")[0];
+
+        const upcomingBooking = await bookingCollection
+          .find({
+            customerEmail: email,
+            checkIn: { $gte: today },
+            bookingStatus: { $ne: "cancelled" },
+          })
+          .sort({ checkIn: 1 })
+          .limit(1)
+          .toArray();
+
+        if (upcomingBooking.length === 0) {
+          return res.send(null);
+        }
+        res.send(upcomingBooking[0]);
+      } catch (error) {
+        console.error("Upcoming booking error:", error);
+
+        res.status(500).send({
+          message: "Failed to load upcoming booking",
+        });
+      }
+    });
+    // =====================
+    // Recent Bookings
+    // =====================
+
+    app.get("/user/recent-bookings", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const recentBookings = await bookingCollection
+          .find({
+            customerEmail: email,
+          })
+          .sort({ createdAt: 1 })
+          .limit(5)
+          .toArray();
+
+        res.send(recentBookings);
+      } catch (error) {
+        console.error("Recent bookings error:", error);
+
+        res.status(500).send({
+          message: "Failed to load recent bookings.",
+        });
+      }
     });
 
     // =========================
