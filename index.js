@@ -2,7 +2,12 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const {
+  MongoClient,
+  ServerApiVersion,
+  ObjectId,
+  CommandSucceededEvent,
+} = require("mongodb");
 
 require("dotenv").config();
 
@@ -47,6 +52,10 @@ async function run() {
     const bookingCollection = client.db("HotelDb").collection("bookings");
 
     const paymentCollection = client.db("HotelDb").collection("payments");
+
+    const employeeApplicationCollection = client
+      .db("HotelDb")
+      .collection("employeeApplications");
 
     // Firebase Token Verify Middleware
     const verifyFBToken = async (req, res, next) => {
@@ -302,6 +311,10 @@ async function run() {
       res.send(result);
     });
 
+    // =========================
+    // Create User
+    // Protected
+    // =========================
     app.post("/users", verifyFBToken, async (req, res) => {
       try {
         const user = req.body;
@@ -320,11 +333,67 @@ async function run() {
 
         res.send(result);
       } catch (error) {
+        console.error("User creation error: ", error);
         res.status(500).send({
           message: "Server Error",
         });
       }
     });
+
+    // =========================
+    // Employee Application
+    // Protected
+    // =========================
+
+    app.post("/employee-applications", verifyFBToken, async (req, res) => {
+      try {
+        const application = req.body;
+        const userEmail = req.decoded_email;
+
+        const existingApplication = await employeeApplicationCollection.findOne(
+          {
+            email: userEmail,
+            status: "pending",
+          },
+        );
+
+        if (existingApplication) {
+          return res.status(400).send({
+            message: "You already have a pending application",
+          });
+        }
+
+        const applicationData = {
+          name: application.name,
+          email: userEmail,
+          phone: application.phone,
+          dateOfBirth: application.dateOfBirth,
+          address: application.address,
+          position: application.position,
+          experience: application.experience,
+          skills: application.skills,
+          reason: application.reason,
+          status: "pending",
+          createdAt: new Date(),
+        };
+
+        const result =
+          await employeeApplicationCollection.insertOne(applicationData);
+
+        res.send({
+          success: true,
+          message: "Application submitted successfully.",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Employee application error: ", error);
+
+        res.status(500).send({
+          message: "Failed to submit employee application.",
+        });
+      }
+    });
+
     // =========================
     // Update User Role
     // Protected
@@ -1136,8 +1205,6 @@ async function run() {
         role: user.role || "customer",
       });
     });
-
-    console.log("USER ROLE ROUTE REGISTERED");
 
     // =========================
     // Get Single Booking
