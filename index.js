@@ -419,6 +419,93 @@ async function run() {
       },
     );
 
+    app.patch(
+      "/admin/manage-employees/:id/approve",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+
+          // Find the employee application
+          const application = await employeeApplicationCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!application) {
+            return res.status(404).send({
+              message: "Employee application not found.",
+            });
+          }
+
+          // Prevent approving an already processed application
+          if (application.status !== "pending") {
+            return res.status(400).send({
+              message: `Application is already ${application.status}.`,
+            });
+          }
+
+          // Find the user who submitted the application
+          const user = await userCollection.findOne({
+            email: application.email,
+          });
+
+          if (!user) {
+            return res.status(404).send({
+              message: "User account not found.",
+            });
+          }
+
+          // Update user role and position
+          const userResult = await userCollection.updateOne(
+            { email: application.email },
+            {
+              $set: {
+                role: "staff",
+                position: application.position,
+                status: "active",
+              },
+            },
+          );
+
+          if (userResult.modifiedCount === 0) {
+            return res.status(400).send({
+              message: "Failed to update user role.",
+            });
+          }
+
+          // Update employee application status
+          const applicationResult =
+            await employeeApplicationCollection.updateOne(
+              { _id: new ObjectId(id) },
+              {
+                $set: {
+                  status: "approved",
+                  approvedAt: new Date(),
+                },
+              },
+            );
+
+          if (applicationResult.modifiedCount === 0) {
+            return res.status(400).send({
+              message: "Failed to update application status.",
+            });
+          }
+
+          res.send({
+            success: true,
+            message: "Employee application approved successfully.",
+          });
+        } catch (error) {
+          console.error("Approve employee application error:", error);
+
+          res.status(500).send({
+            message: "Failed to approve employee application.",
+          });
+        }
+      },
+    );
+
     // =========================
     // Update User Role
     // Protected
