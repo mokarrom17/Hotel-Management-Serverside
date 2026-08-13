@@ -393,6 +393,31 @@ async function run() {
         });
       }
     });
+    // =========================
+    // Get All Employee Applications
+    // Protected
+    // =========================
+    app.get(
+      "/admin/manage-employees",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const applications = await employeeApplicationCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          res.send(applications);
+        } catch (error) {
+          console.error("Get employee applications error: ", error);
+
+          res.status(500).send({
+            message: "Failed to fetch employee applications.",
+          });
+        }
+      },
+    );
 
     // =========================
     // Update User Role
