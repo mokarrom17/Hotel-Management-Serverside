@@ -419,6 +419,10 @@ async function run() {
       },
     );
 
+    // =========================
+    // Approve Employee Application
+    // Protected
+    // =========================
     app.patch(
       "/admin/manage-employees/:id/approve",
       verifyFBToken,
@@ -501,6 +505,71 @@ async function run() {
 
           res.status(500).send({
             message: "Failed to approve employee application.",
+          });
+        }
+      },
+    );
+
+    // =========================
+    // Reject Employee Application
+    // Protected
+    // =========================
+    app.patch(
+      "/admin/manage-employees/:id/reject",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+
+          // Find the employee application
+
+          const application = await employeeApplicationCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!application) {
+            return res.status(404).send({
+              message: "Employee application no found.",
+            });
+          }
+
+          // Only pending applications can be rejected
+          if (application.status !== "pending") {
+            return res.status(400).send({
+              message: `Employee is already ${application.status}.`,
+            });
+          }
+
+          // Update application status
+          const result = await employeeApplicationCollection.updateOne(
+            {
+              _id: new ObjectId(id),
+              status: "pending",
+            },
+
+            {
+              $set: {
+                status: "rejected",
+                rejectedAt: new Date(),
+              },
+            },
+          );
+
+          if (result.modifiedCount === 0) {
+            return res.status(400).send({
+              message: "Failed to reject employee application.",
+            });
+          }
+          res.send({
+            success: true,
+            message: "Employee application rejected successfully.",
+          });
+        } catch (error) {
+          console.error("Reject employee application error:", error);
+
+          res.status(500).send({
+            message: "Failed to reject employee application.",
           });
         }
       },
