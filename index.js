@@ -1586,6 +1586,38 @@ async function run() {
         });
       }
     });
+    // =========================
+    // Staff Dashboard Statistics
+    // Protected
+    // =========================
+    app.get("/staff/dashboard-stats", verifyFBToken, async (req, res) => {
+      try {
+        const totalBookings = await bookingCollection.countDocuments();
+
+        const pendingBookings = await bookingCollection.countDocuments({
+          bookingStatus: "pending",
+        });
+        const confirmedBookings = await bookingCollection.countDocuments({
+          bookingStatus: "confirmed",
+        });
+        const completedBookings = await bookingCollection.countDocuments({
+          bookingStatus: "completed",
+        });
+
+        res.send({
+          totalBookings,
+          pendingBookings,
+          completedBookings,
+          confirmedBookings,
+        });
+      } catch (error) {
+        console.error("Staff dashboard stats error:", error);
+
+        res.status(500).send({
+          message: "Failed to load staff dashboard statistics.",
+        });
+      }
+    });
 
     // =========================
     await client.db("admin").command({ ping: 1 });
