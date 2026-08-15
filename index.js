@@ -256,10 +256,11 @@ async function run() {
     });
 
     // =========================
-    // Get Available Rooms By Type
-    // Public
+    // Room Filter Options (Floor / View) for a Room Type
+    // Public — date-independent, শুধু room type-এর সব possible
+    // floor আর view value গুলো দেয়, dropdown populate করার জন্য
     // =========================
-    app.get("/rooms/available", async (req, res) => {
+    app.get("/rooms/filters", async (req, res) => {
       try {
         const { roomType } = req.query;
 
@@ -270,22 +271,93 @@ async function run() {
         }
 
         const rooms = await roomCollection
-          .find({
-            roomTypeName: roomType,
-            isAvailable: true,
-          })
-          .project({
-            roomNumber: 1,
-            floor: 1,
-            view: 1,
-            maintenanceStatus: 1,
-          })
-          .sort({ roomNumber: 1 })
+          .find({ roomTypeName: roomType })
+          .project({ floor: 1, view: 1 })
           .toArray();
+
+        const floors = [
+          ...new Set(
+            rooms
+              .map((r) => r.floor)
+              .filter((f) => f !== undefined && f !== null),
+          ),
+        ].sort((a, b) => a - b);
+
+        const views = [...new Set(rooms.map((r) => r.view).filter(Boolean))];
+
+        res.send({ floors, views });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({
+          message: "Failed to load room filter options",
+        });
+      }
+    });
+
+    // =========================
+    // Get Available Rooms By Type
+    // Public
+    // =========================
+    app.get("/rooms/available", async (req, res) => {
+      try {
+        const { roomType, checkIn, checkOut, floor, view } = req.query;
+
+        if (!roomType || !checkIn || !checkOut) {
+          return res.status(400).send({
+            message: "roomType, checkIn and checkOut are required",
+          });
+        }
+
+        // 1. Room type-এর সব room নাও (maintenance-এ থাকা room বাদে)
+        const allRooms = await roomCollection
+          .find({ roomTypeName: roomType })
+          .toArray();
+
+        const bookableRooms = allRooms.filter(
+          (r) => !r.maintenanceStatus || r.maintenanceStatus === "good",
+        );
+
+        const roomIds = bookableRooms.map((r) => r._id.toString());
+
+        // 2. Requested date-এর সাথে overlap করা active booking খুঁজো
+        const overlappingBookings = await bookingCollection
+          .find({
+            roomId: { $in: roomIds },
+            bookingStatus: { $in: ["pending", "confirmed", "checked-in"] },
+            checkIn: { $lt: checkOut },
+            checkOut: { $gt: checkIn },
+          })
+          .toArray();
+
+        const bookedRoomIds = new Set(overlappingBookings.map((b) => b.roomId));
+
+        let available = bookableRooms.filter(
+          (r) => !bookedRoomIds.has(r._id.toString()),
+        );
+
+        if (floor) {
+          available = available.filter(
+            (r) => String(r.floor) === String(floor),
+          );
+        }
+
+        if (view) {
+          available = available.filter((r) => r.view === view);
+        }
+
+        const rooms = available
+          .map((r) => ({
+            _id: r._id,
+            roomNumber: r.roomNumber,
+            floor: r.floor,
+            view: r.view,
+            maintenanceStatus: r.maintenanceStatus,
+          }))
+          .sort((a, b) => (a.roomNumber > b.roomNumber ? 1 : -1));
 
         res.send(rooms);
       } catch (error) {
-        console.log(error);
+        console.error(error);
         res.status(500).send({
           message: "Failed to load available rooms",
         });
@@ -305,7 +377,7 @@ async function run() {
     // Users
     // =========================
 
-    app.get("/users", verifyFBToken, async (req, res) => {
+    app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
       const cursor = userCollection.find();
       const result = await cursor.toArray();
       res.send(result);
@@ -605,7 +677,6 @@ async function run() {
       const booking = req.body;
 
       booking.createdAt = new Date().toISOString();
-
       booking.paymentStatus = booking.paymentStatus || "pending";
       booking.bookingStatus = booking.bookingStatus || "pending";
 
@@ -615,9 +686,49 @@ async function run() {
         });
       }
 
-      const result = await bookingCollection.insertOne(booking);
+      if (!booking.roomId || !booking.checkIn || !booking.checkOut) {
+        return res.status(400).send({
+          message: "roomId, checkIn and checkOut are required",
+        });
+      }
 
-      res.send(result);
+      const session = client.startSession();
+
+      try {
+        let result;
+
+        await session.withTransaction(async () => {
+          // এই room-এ ওই date range-এ আগে থেকে active booking আছে কিনা check করো
+          const overlapping = await bookingCollection.findOne(
+            {
+              roomId: booking.roomId,
+              bookingStatus: { $in: ["pending", "confirmed", "checked-in"] },
+              checkIn: { $lt: booking.checkOut },
+              checkOut: { $gt: booking.checkIn },
+            },
+            { session },
+          );
+
+          if (overlapping) {
+            throw new Error("ROOM_UNAVAILABLE");
+          }
+
+          result = await bookingCollection.insertOne(booking, { session });
+        });
+
+        res.send(result);
+      } catch (error) {
+        if (error.message === "ROOM_UNAVAILABLE") {
+          return res.status(409).send({
+            message: "This room is no longer available for the selected dates.",
+          });
+        }
+
+        console.error(error);
+        res.status(500).send({ message: "Failed to create booking" });
+      } finally {
+        await session.endSession();
+      }
     });
 
     // =========================
