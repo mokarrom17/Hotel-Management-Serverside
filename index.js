@@ -105,9 +105,43 @@ async function run() {
       next();
     };
 
-    // =========================
+    // =================================================================================
+    // Verify Staff Middleware
+    // =================================================================================
+    const verifyStaff = async (req, res, next) => {
+      const email = req.decoded_email;
+
+      const user = await userCollection.findOne({ email });
+
+      if (!user || user.role !== "staff") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access - Staff only" });
+      }
+
+      next();
+    };
+
+    // ===================================================================================
+    // Verify Staff or Admin Middleware
+    // ===================================================================================
+    const verifyStaffOrAdmin = async (req, res, next) => {
+      const email = req.decoded_email;
+
+      const user = await userCollection.findOne({ email });
+
+      if (!user || (user.role !== "staff" && user.role !== "admin")) {
+        return res.status(403).send({
+          message: "Forbidden access - Staff or Admin only",
+        });
+      }
+
+      next();
+    };
+
+    // ======================================================================================
     // Rooms Types
-    // =========================
+    // ======================================================================================
 
     app.get("/roomTypes", async (req, res) => {
       const result = await serviceCollection.find().toArray();
@@ -127,10 +161,10 @@ async function run() {
       res.send(result);
     });
 
-    // =========================
+    // ====================================================================================
     // Get All Rooms
     // Search + Filter
-    // =========================
+    // ====================================================================================
 
     app.get("/rooms", async (req, res) => {
       try {
@@ -1730,7 +1764,36 @@ async function run() {
       }
     });
 
-    // =========================
+    // ===================================================
+    // Staff Bookings
+    // ===================================================
+
+    app.get(
+      "/staff/bookings",
+      verifyFBToken,
+      verifyStaffOrAdmin,
+      async (req, res) => {
+        try {
+          const bookings = await bookingCollection
+            .find({
+              bookingStatus: {
+                $in: ["pending", "confirmed"],
+              },
+            })
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          res.send(bookings);
+        } catch (error) {
+          console.error("Get staff bookings error:", error);
+
+          res.status(500).send({
+            message: "Failed to fetch staff bookings.",
+          });
+        }
+      },
+    );
+    // ================================================================================================
     await client.db("admin").command({ ping: 1 });
 
     console.log(
