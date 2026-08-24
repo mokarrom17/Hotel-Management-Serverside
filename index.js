@@ -2190,6 +2190,51 @@ async function run() {
         }
       },
     );
+
+    //===============================================
+    // Staff Today's Activity
+    // ==============================================
+    app.get(
+      "/staff/today-activity",
+      verifyFBToken,
+      verifyStaffOrAdmin,
+      async (req, res) => {
+        try {
+          const today = new Date().toISOString().split("T")[0];
+
+          const checkIns = await bookingCollection
+            .find({
+              checkIn: today,
+              bookingStatus: {
+                $in: ["confirmed", "checked-in"],
+              },
+            })
+            .sort({ checkIn: 1 })
+            .toArray();
+
+          const checkOuts = await bookingCollection
+            .find({
+              checkOut: today,
+              bookingStatus: {
+                $in: ["checked-in", "completed"],
+              },
+            })
+            .sort({ checkOut: 1 })
+            .toArray();
+
+          res.send({
+            checkIns,
+            checkOuts,
+          });
+        } catch (error) {
+          console.error("Today's activity error:", error);
+
+          res.status(500).send({
+            message: "Failed to load today's activity",
+          });
+        }
+      },
+    );
     // ================================================================================================
     await client.db("admin").command({ ping: 1 });
 
