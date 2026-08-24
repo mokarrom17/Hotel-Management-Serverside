@@ -51,6 +51,18 @@ async function run() {
 
     const bookingCollection = client.db("HotelDb").collection("bookings");
 
+    const bookingHistoryCollection = client
+      .db("HotelDb")
+      .collection("bookingHistory");
+
+    // ====================================
+    // Booking History Unique Index
+    // ====================================
+    await bookingHistoryCollection.createIndex(
+      { bookingId: 1 },
+      { unique: true },
+    );
+
     const paymentCollection = client.db("HotelDb").collection("payments");
 
     const employeeApplicationCollection = client
@@ -328,70 +340,78 @@ async function run() {
       }
     });
 
-    // =========================
-    // Get Available Rooms By Type
-    // Public
-    // =========================
+    // ====================================
+    // Get Available Rooms
+    // ====================================
     app.get("/rooms/available", async (req, res) => {
       try {
         const { roomType, checkIn, checkOut, floor, view } = req.query;
 
+        // ====================================
+        // Validate required fields
+        // ====================================
         if (!roomType || !checkIn || !checkOut) {
           return res.status(400).send({
             message: "roomType, checkIn and checkOut are required",
           });
         }
 
-        // 1. Room type-এর সব room নাও (maintenance-এ থাকা room বাদে)
-        const allRooms = await roomCollection
-          .find({ roomTypeName: roomType })
-          .toArray();
-
-        const bookableRooms = allRooms.filter(
-          (r) => !r.maintenanceStatus || r.maintenanceStatus === "good",
-        );
-
-        const roomIds = bookableRooms.map((r) => r._id.toString());
-
-        // 2. Requested date-এর সাথে overlap করা active booking খুঁজো
-        const overlappingBookings = await bookingCollection
-          .find({
-            roomId: { $in: roomIds },
-            bookingStatus: { $in: ["pending", "confirmed", "checked-in"] },
-            checkIn: { $lt: checkOut },
-            checkOut: { $gt: checkIn },
-          })
-          .toArray();
-
-        const bookedRoomIds = new Set(overlappingBookings.map((b) => b.roomId));
-
-        let available = bookableRooms.filter(
-          (r) => !bookedRoomIds.has(r._id.toString()),
-        );
+        // ====================================
+        // Get rooms by room type
+        // ====================================
+        const query = {
+          roomTypeName: roomType,
+        };
 
         if (floor) {
-          available = available.filter(
-            (r) => String(r.floor) === String(floor),
-          );
+          query.floor = Number(floor);
         }
 
         if (view) {
-          available = available.filter((r) => r.view === view);
+          query.view = view;
         }
 
-        const rooms = available
-          .map((r) => ({
-            _id: r._id,
-            roomNumber: r.roomNumber,
-            floor: r.floor,
-            view: r.view,
-            maintenanceStatus: r.maintenanceStatus,
+        const allRooms = await roomCollection.find(query).toArray();
+
+        // ====================================
+        // Remove rooms under maintenance
+        // ====================================
+        const bookableRooms = allRooms.filter(
+          (room) =>
+            !room.maintenanceStatus || room.maintenanceStatus === "good",
+        );
+
+        // ====================================
+        // Check bookedDates for each room
+        // ====================================
+        const availableRooms = bookableRooms.filter((room) => {
+          const bookedDates = room.bookedDates || [];
+
+          const hasOverlap = bookedDates.some((booking) => {
+            return booking.checkIn < checkOut && booking.checkOut > checkIn;
+          });
+
+          // If overlap exists → room unavailable
+          return !hasOverlap;
+        });
+
+        // ====================================
+        // Prepare response
+        // ====================================
+        const rooms = availableRooms
+          .map((room) => ({
+            _id: room._id,
+            roomNumber: room.roomNumber,
+            floor: room.floor,
+            view: room.view,
+            maintenanceStatus: room.maintenanceStatus,
           }))
           .sort((a, b) => (a.roomNumber > b.roomNumber ? 1 : -1));
 
         res.send(rooms);
       } catch (error) {
-        console.error(error);
+        console.error("Available rooms error:", error);
+
         res.status(500).send({
           message: "Failed to load available rooms",
         });
@@ -707,8 +727,14 @@ async function run() {
     // Protected
     // =========================
 
+    // ====================================
+    // Create Booking
+    // ====================================
     app.post("/bookings", verifyFBToken, async (req, res) => {
       const booking = req.body;
+
+      console.log("BOOKING ROOM ID:", booking.roomId);
+      console.log("ROOM ID TYPE:", typeof booking.roomId);
 
       booking.createdAt = new Date().toISOString();
       booking.paymentStatus = booking.paymentStatus || "pending";
@@ -726,19 +752,51 @@ async function run() {
         });
       }
 
+      // Validate room ID
+      if (!ObjectId.isValid(booking.roomId)) {
+        return res.status(400).send({
+          message: "Invalid room ID",
+        });
+      }
+
       const session = client.startSession();
 
       try {
         let result;
 
         await session.withTransaction(async () => {
-          // এই room-এ ওই date range-এ আগে থেকে active booking আছে কিনা check করো
+          // ====================================
+          // 1. Find selected room
+          // ====================================
+          const room = await roomCollection.findOne(
+            {
+              _id: new ObjectId(booking.roomId),
+            },
+            { session },
+          );
+
+          if (!room) {
+            throw new Error("ROOM_NOT_FOUND");
+          }
+
+          // ====================================
+          // 2. Check existing active booking
+          // ====================================
           const overlapping = await bookingCollection.findOne(
             {
               roomId: booking.roomId,
-              bookingStatus: { $in: ["pending", "confirmed", "checked-in"] },
-              checkIn: { $lt: booking.checkOut },
-              checkOut: { $gt: booking.checkIn },
+
+              bookingStatus: {
+                $in: ["pending", "confirmed", "checked-in"],
+              },
+
+              checkIn: {
+                $lt: booking.checkOut,
+              },
+
+              checkOut: {
+                $gt: booking.checkIn,
+              },
             },
             { session },
           );
@@ -747,19 +805,64 @@ async function run() {
             throw new Error("ROOM_UNAVAILABLE");
           }
 
+          // ====================================
+          // 3. Create booking
+          // ====================================
           result = await bookingCollection.insertOne(booking, { session });
+
+          // ====================================
+          // 4. Add booking to room bookedDates
+          // ====================================
+          await roomCollection.updateOne(
+            {
+              _id: new ObjectId(booking.roomId),
+            },
+            {
+              $push: {
+                bookedDates: {
+                  bookingId: result.insertedId.toString(),
+                  checkIn: booking.checkIn,
+                  checkOut: booking.checkOut,
+                  status: booking.bookingStatus,
+                },
+              },
+            },
+            { session },
+          );
         });
 
-        res.send(result);
+        // ====================================
+        // Success Response
+        // ====================================
+        res.send({
+          success: true,
+          message: "Booking created successfully.",
+          result,
+        });
       } catch (error) {
+        // ====================================
+        // Room Not Found
+        // ====================================
+        if (error.message === "ROOM_NOT_FOUND") {
+          return res.status(404).send({
+            message: "Room not found.",
+          });
+        }
+
+        // ====================================
+        // Room Unavailable
+        // ====================================
         if (error.message === "ROOM_UNAVAILABLE") {
           return res.status(409).send({
             message: "This room is no longer available for the selected dates.",
           });
         }
 
-        console.error(error);
-        res.status(500).send({ message: "Failed to create booking" });
+        console.error("Create booking error:", error);
+
+        res.status(500).send({
+          message: "Failed to create booking",
+        });
       } finally {
         await session.endSession();
       }
@@ -1200,56 +1303,115 @@ async function run() {
         }
       },
     );
-
-    // ===================================
-    // Confirm booking
-    // ===================================
+    // ====================================
+    // Confirm Booking
+    // ====================================
     app.patch(
       "/admin/bookings/:id/confirm",
       verifyFBToken,
       verifyAdmin,
       async (req, res) => {
-        const { id } = req.params;
+        try {
+          const { id } = req.params;
 
-        const booking = await bookingCollection.findOne({
-          _id: new ObjectId(id),
-        });
+          // Validate booking ID
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+              message: "Invalid booking ID",
+            });
+          }
 
-        if (!booking) {
-          return res.status(404).send({
-            message: "Booking not found",
-          });
-        }
-
-        if (
-          booking.bookingStatus === "confirmed" ||
-          booking.bookingStatus === "checked-in" ||
-          booking.bookingStatus === "checked-out"
-        ) {
-          return res.status(400).send({
-            message: "Booking is already confirmed.",
-          });
-        }
-
-        if (booking.bookingStatus === "cancelled") {
-          return res.status(400).send({
-            message: "Cancelled booking cannot be confirmed.",
-          });
-        }
-
-        const result = await bookingCollection.updateOne(
-          {
+          // Find booking
+          const booking = await bookingCollection.findOne({
             _id: new ObjectId(id),
-          },
-          {
-            $set: {
-              bookingStatus: "confirmed",
-              confirmedAt: new Date().toISOString(),
-            },
-          },
-        );
+          });
 
-        res.send(result);
+          if (!booking) {
+            return res.status(404).send({
+              message: "Booking not found",
+            });
+          }
+
+          // Already confirmed / active booking
+          if (
+            booking.bookingStatus === "confirmed" ||
+            booking.bookingStatus === "checked-in" ||
+            booking.bookingStatus === "checked-out" ||
+            booking.bookingStatus === "completed"
+          ) {
+            return res.status(400).send({
+              message: "Booking is already confirmed or completed.",
+            });
+          }
+
+          // Cancelled booking cannot be confirmed
+          if (booking.bookingStatus === "cancelled") {
+            return res.status(400).send({
+              message: "Cancelled booking cannot be confirmed.",
+            });
+          }
+
+          // Validate room ID
+          if (!booking.roomId || !ObjectId.isValid(booking.roomId)) {
+            return res.status(400).send({
+              message: "Invalid room ID in booking.",
+            });
+          }
+
+          // Find room
+          const room = await roomCollection.findOne({
+            _id: new ObjectId(booking.roomId),
+          });
+
+          if (!room) {
+            return res.status(404).send({
+              message: "Room not found.",
+            });
+          }
+
+          // ====================================
+          // Update Booking
+          // ====================================
+          const bookingResult = await bookingCollection.updateOne(
+            {
+              _id: new ObjectId(id),
+            },
+            {
+              $set: {
+                bookingStatus: "confirmed",
+                confirmedAt: new Date().toISOString(),
+              },
+            },
+          );
+
+          // ====================================
+          // Update bookedDates status
+          // ====================================
+          const roomResult = await roomCollection.updateOne(
+            {
+              _id: new ObjectId(booking.roomId),
+              "bookedDates.bookingId": id,
+            },
+            {
+              $set: {
+                "bookedDates.$.status": "confirmed",
+              },
+            },
+          );
+
+          res.send({
+            success: true,
+            message: "Booking confirmed successfully.",
+            bookingResult,
+            roomResult,
+          });
+        } catch (error) {
+          console.error("Confirm booking error:", error);
+
+          res.status(500).send({
+            message: "Failed to confirm booking.",
+          });
+        }
       },
     );
     // ===================================
@@ -1310,100 +1472,316 @@ async function run() {
         res.send(result);
       },
     );
-    // =====================================
+    // ====================================
     // Check-In booking
-    // =====================================
+    // ====================================
     app.patch(
       "/admin/bookings/:id/check-in",
       verifyFBToken,
-      verifyAdmin,
+      verifyStaffOrAdmin,
       async (req, res) => {
-        const { id } = req.params;
+        try {
+          const { id } = req.params;
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({
-            message: "Invalid booking ID",
-          });
-        }
+          // ====================================
+          // Validate Booking ID
+          // ====================================
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+              message: "Invalid booking ID",
+            });
+          }
 
-        const booking = await bookingCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!booking) {
-          return res.status(404).send({
-            message: "Booking not found",
-          });
-        }
-
-        // Only confirmed bookings can be checked in
-        if (booking.bookingStatus !== "confirmed") {
-          return res.status(400).send({
-            message: "Only confirmed bookings can be checked in.",
-          });
-        }
-
-        const result = await bookingCollection.updateOne(
-          {
+          // ====================================
+          // Find Booking
+          // ====================================
+          const booking = await bookingCollection.findOne({
             _id: new ObjectId(id),
-          },
-          {
-            $set: {
-              bookingStatus: "checked-in",
-              checkedInAt: new Date().toISOString(),
-            },
-          },
-        );
+          });
 
-        res.send(result);
+          if (!booking) {
+            return res.status(404).send({
+              message: "Booking not found",
+            });
+          }
+
+          // ====================================
+          // Only confirmed bookings can be checked in
+          // ====================================
+          if (booking.bookingStatus !== "confirmed") {
+            return res.status(400).send({
+              message: "Only confirmed bookings can be checked in.",
+            });
+          }
+
+          // ====================================
+          // Validate Room ID
+          // ====================================
+          if (!booking.roomId || !ObjectId.isValid(booking.roomId)) {
+            return res.status(400).send({
+              message: "Invalid room ID in booking.",
+            });
+          }
+
+          // ====================================
+          // Update Booking
+          // ====================================
+          const result = await bookingCollection.updateOne(
+            {
+              _id: new ObjectId(id),
+            },
+            {
+              $set: {
+                bookingStatus: "checked-in",
+                checkedInAt: new Date().toISOString(),
+                checkedInBy: req.decoded_email,
+              },
+            },
+          );
+
+          // ====================================
+          // Update Room
+          // ====================================
+          const roomResult = await roomCollection.updateOne(
+            {
+              _id: new ObjectId(booking.roomId),
+              "bookedDates.bookingId": id,
+            },
+            {
+              $set: {
+                isAvailable: false,
+                "bookedDates.$.status": "checked-in",
+              },
+            },
+          );
+
+          // ====================================
+          // Response
+          // ====================================
+          res.send({
+            success: true,
+            message: "Guest checked in successfully.",
+            result,
+            roomResult,
+          });
+        } catch (error) {
+          console.error("Check-in error:", error);
+
+          res.status(500).send({
+            message: "Failed to check in guest.",
+          });
+        }
       },
     );
+
     // ====================================
     // Check-Out booking
     // ====================================
     app.patch(
       "/admin/bookings/:id/check-out",
       verifyFBToken,
+      verifyStaffOrAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+
+          // ====================================
+          // Validate Booking ID
+          // ====================================
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+              message: "Invalid booking ID",
+            });
+          }
+
+          // ====================================
+          // Find Booking
+          // ====================================
+          const booking = await bookingCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!booking) {
+            return res.status(404).send({
+              message: "Booking not found",
+            });
+          }
+
+          // ====================================
+          // Only checked-in bookings can be checked out
+          // ====================================
+          if (booking.bookingStatus !== "checked-in") {
+            return res.status(400).send({
+              message: "Only checked-in bookings can be checked out.",
+            });
+          }
+
+          // ====================================
+          // Validate Room ID
+          // ====================================
+          if (!booking.roomId || !ObjectId.isValid(booking.roomId)) {
+            return res.status(400).send({
+              message: "Invalid room ID in booking.",
+            });
+          }
+
+          // ====================================
+          // Checkout timestamp
+          // ====================================
+          const checkedOutAt = new Date().toISOString();
+
+          // ====================================
+          // Update Booking
+          // ====================================
+          const result = await bookingCollection.updateOne(
+            {
+              _id: new ObjectId(id),
+            },
+            {
+              $set: {
+                bookingStatus: "completed",
+                checkedOutAt,
+                checkedOutBy: req.decoded_email,
+              },
+            },
+          );
+
+          // ====================================
+          // Update Room
+          // ====================================
+          const roomResult = await roomCollection.updateOne(
+            {
+              _id: new ObjectId(booking.roomId),
+              "bookedDates.bookingId": id,
+            },
+            {
+              $set: {
+                isAvailable: true,
+                "bookedDates.$.status": "completed",
+              },
+            },
+          );
+
+          // ====================================
+          // Create Booking History
+          // ====================================
+          const history = {
+            bookingId: id,
+
+            customerName: booking.customerName,
+            customerEmail: booking.customerEmail,
+
+            roomId: booking.roomId,
+            roomNumber: booking.roomNumber,
+            roomType: booking.type,
+
+            checkIn: booking.checkIn,
+            checkOut: booking.checkOut,
+            nights: booking.nights,
+
+            pricePerNight: booking.pricePerNight,
+            serviceFee: booking.serviceFee,
+            totalPrice: booking.totalPrice,
+
+            paymentStatus: booking.paymentStatus,
+
+            confirmedAt: booking.confirmedAt,
+
+            checkedInAt: booking.checkedInAt,
+            checkedInBy: booking.checkedInBy,
+
+            checkedOutAt,
+            checkedOutBy: req.decoded_email,
+
+            completedAt: checkedOutAt,
+
+            historyCreatedAt: new Date().toISOString(),
+          };
+
+          const historyResult =
+            await bookingHistoryCollection.insertOne(history);
+
+          // ====================================
+          // Response
+          // ====================================
+          res.send({
+            success: true,
+            message: "Guest checked out successfully.",
+            result,
+            roomResult,
+            historyResult,
+          });
+        } catch (error) {
+          console.error("Check-out error:", error);
+
+          // ====================================
+          // Duplicate Booking History
+          // ====================================
+          if (error.code === 11000) {
+            return res.status(409).send({
+              message: "Booking history already exists.",
+            });
+          }
+
+          res.status(500).send({
+            message: "Failed to check out guest.",
+          });
+        }
+      },
+    );
+
+    // ====================================
+    // Get All Booking History - Admin
+    // ====================================\
+    app.get(
+      "/admin/booking-history",
+      verifyFBToken,
       verifyAdmin,
       async (req, res) => {
-        const { id } = req.params;
+        try {
+          const history = await bookingHistoryCollection
+            .find({})
+            .sort({ completedAt: -1 })
+            .toArray();
+          res.send(history);
+        } catch (error) {
+          console.error("Admin booking history error: ", error);
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({
-            message: "Invalid booking ID",
+          res.status(500).send({
+            message: "Failed to load booking history.",
           });
         }
+      },
+    );
 
-        const booking = await bookingCollection.findOne({
-          _id: new ObjectId(id),
-        });
+    // ====================================
+    // Get Staff Booking History
+    // ====================================
+    app.get(
+      "/staff/booking-history",
+      verifyFBToken,
+      verifyStaffOrAdmin,
+      async (req, res) => {
+        try {
+          console.log("Staff History User:", req.decoded_email);
 
-        if (!booking) {
-          return res.status(404).send({
-            message: "Booking not found",
+          const history = await bookingHistoryCollection
+            .find({
+              checkedOutBy: req.decoded_email,
+            })
+            .sort({ completedAt: -1 })
+            .toArray();
+
+          console.log("Staff History Result:", history);
+
+          res.send(history);
+        } catch (error) {
+          console.error("Staff booking history error:", error);
+
+          res.status(500).send({
+            message: "Failed to load booking history.",
           });
         }
-
-        // Only checked-in bookings can be checked out
-        if (booking.bookingStatus !== "checked-in") {
-          return res.status(400).send({
-            message: "Only checked-in bookings can be checked out.",
-          });
-        }
-
-        const result = await bookingCollection.updateOne(
-          {
-            _id: new ObjectId(id),
-          },
-          {
-            $set: {
-              bookingStatus: "checked-out",
-              checkedOutAt: new Date().toISOString(),
-            },
-          },
-        );
-
-        res.send(result);
       },
     );
 
@@ -1538,21 +1916,40 @@ async function run() {
     // =========================
 
     app.get("/bookings/:id", verifyFBToken, async (req, res) => {
-      const id = req.params.id;
+      try {
+        const { id } = req.params;
 
-      const booking = await bookingCollection.findOne({
-        _id: new ObjectId(id),
-      });
+        // Validate booking ID
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({
+            message: "Invalid booking ID",
+          });
+        }
 
-      if (!booking) {
-        return res.status(404).send({ message: "Booking Not Found" });
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking Not Found",
+          });
+        }
+
+        if (booking.customerEmail !== req.decoded_email) {
+          return res.status(403).send({
+            message: "Forbidden access",
+          });
+        }
+
+        res.send(booking);
+      } catch (error) {
+        console.error("Get booking error:", error);
+
+        res.status(500).send({
+          message: "Failed to fetch booking",
+        });
       }
-
-      if (booking.customerEmail !== req.decoded_email) {
-        return res.status(403).send({ message: "Forbidden access" });
-      }
-
-      res.send(booking);
     });
 
     // =========================
@@ -1777,7 +2174,7 @@ async function run() {
           const bookings = await bookingCollection
             .find({
               bookingStatus: {
-                $in: ["pending", "confirmed"],
+                $in: ["pending", "confirmed", "checked-in"],
               },
             })
             .sort({ createdAt: -1 })
