@@ -2235,6 +2235,119 @@ async function run() {
         }
       },
     );
+
+    // ====================================
+    // Staff Recent Activity
+    // ====================================
+    app.get(
+      "/staff/recent-activity",
+      verifyFBToken,
+      verifyStaffOrAdmin,
+      async (req, res) => {
+        try {
+          const staffEmail = req.decoded_email;
+
+          const bookings = await bookingCollection
+            .find({
+              $or: [
+                {
+                  checkedInBy: staffEmail,
+                },
+                {
+                  checkedOutBy: staffEmail,
+                },
+              ],
+            })
+            .sort({
+              checkedOutAt: -1,
+              checkedInAt: -1,
+            })
+            .limit(10)
+            .toArray();
+
+          const activities = [];
+
+          bookings.forEach((booking) => {
+            // Check-in activity
+            if (booking.checkedInBy === staffEmail && booking.checkedInAt) {
+              activities.push({
+                id: `${booking._id}-check-in`,
+                type: "check-in",
+                bookingId: booking._id,
+                customerName: booking.customerName,
+                roomNumber: booking.roomNumber,
+                staffEmail: booking.checkedInBy,
+                timestamp: booking.checkedInAt,
+              });
+            }
+
+            // Check-out activity
+            if (booking.checkedOutBy === staffEmail && booking.checkedOutAt) {
+              activities.push({
+                id: `${booking._id}-check-out`,
+                type: "check-out",
+                bookingId: booking._id,
+                customerName: booking.customerName,
+                roomNumber: booking.roomNumber,
+                staffEmail: booking.checkedOutBy,
+                timestamp: booking.checkedOutAt,
+              });
+            }
+          });
+
+          // Latest activities first
+          activities.sort(
+            (a, b) => new Date(b.timestamp) - new Date(a.timestamp),
+          );
+
+          res.send(activities.slice(0, 10));
+        } catch (error) {
+          console.error("Staff recent activity error:", error);
+
+          res.status(500).send({
+            message: "Failed to load recent activity.",
+          });
+        }
+      },
+    );
+
+    // =============================
+    //
+    app.get(
+      "/staff/profile",
+      verifyFBToken,
+      verifyStaffOrAdmin,
+      async (req, res) => {
+        try {
+          const email = req.decoded_email;
+
+          const application = await employeeApplicationCollection.findOne({
+            email,
+            status: "approved",
+          });
+
+          if (!application) {
+            return res.status(404).send({
+              message: "Approved employee profile not found.",
+            });
+          }
+
+          res.send({
+            name: application.name,
+            email: application.email,
+            position: application.position,
+            experience: application.experience,
+            skills: application.skills,
+          });
+        } catch (error) {
+          console.error("Staff profile error:", error);
+
+          res.status(500).send({
+            message: "Failed to load staff profile.",
+          });
+        }
+      },
+    );
     // ================================================================================================
     await client.db("admin").command({ ping: 1 });
 
