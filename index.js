@@ -55,6 +55,7 @@ async function run() {
       .db("HotelDb")
       .collection("bookingHistory");
 
+    const reviewCollection = client.db("HotelDb").collection("reviews");
     // ====================================
     // Booking History Unique Index
     // ====================================
@@ -2348,7 +2349,335 @@ async function run() {
         }
       },
     );
-    // ================================================================================================
+    // =======================================
+    //
+    // =======================================
+    app.post("/reviews", verifyFBToken, async (req, res) => {
+      try {
+        const review = req.body;
+
+        const customerEmail = req.decoded_email;
+
+        // ==========================================
+        // Required fields
+        // ==========================================
+        if (!review.bookingId || !review.rating || !review.comment) {
+          return res.status(400).send({
+            message: "bookingId, rating and comment are required.",
+          });
+        }
+
+        // ==========================================
+        // Validate Rating
+        // ==========================================
+        const rating = Number(review.rating);
+
+        if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+          return res.status(400).send({
+            message: "Rating must be between 1 and 5.",
+          });
+        }
+
+        // ==========================================
+        // Find Booking
+        // ==========================================
+        if (!ObjectId.isValid(review.bookingId)) {
+          return res.status(400).send({
+            message: "Invalid booking ID.",
+          });
+        }
+
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(review.bookingId),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking not found.",
+          });
+        }
+
+        // ==========================================
+        // Customer ownership
+        // ==========================================
+        if (booking.customerEmail !== customerEmail) {
+          return res.status(403).send({
+            message: "You can only review your own booking.",
+          });
+        }
+
+        // ==========================================
+        // Only completed booking can be reviewed
+        // ==========================================
+        if (booking.bookingStatus !== "completed") {
+          return res.status(400).send({
+            message: "Only completed bookings can be reviewed.",
+          });
+        }
+
+        // ==========================================
+        // Duplicate protection
+        // ==========================================
+        const existingReview = await reviewCollection.findOne({
+          bookingId: review.bookingId,
+        });
+
+        if (existingReview) {
+          return res.status(409).send({
+            message: "You have already reviewed this booking.",
+          });
+        }
+
+        // ==========================================
+        // Create Review
+        // ==========================================
+        const reviewDocument = {
+          bookingId: review.bookingId,
+
+          customerEmail: booking.customerEmail,
+          customerName: booking.customerName,
+
+          roomId: booking.roomId,
+          roomNumber: booking.roomNumber,
+          roomType: booking.type,
+
+          rating,
+
+          comment: review.comment.trim(),
+
+          createdAt: new Date().toISOString(),
+        };
+
+        const result = await reviewCollection.insertOne(reviewDocument);
+
+        res.status(201).send({
+          success: true,
+          message: "Review submitted successfully.",
+          result,
+        });
+      } catch (error) {
+        console.error("Create review error:", error);
+
+        // MongoDB duplicate-key protection
+        if (error.code === 11000) {
+          return res.status(409).send({
+            message: "You have already reviewed this booking.",
+          });
+        }
+
+        res.status(500).send({
+          message: "Failed to submit review.",
+        });
+      }
+    });
+
+    // ==========================================
+    //
+    // ==========================================
+    app.get("/reviews/booking/:bookingId", verifyFBToken, async (req, res) => {
+      try {
+        const { bookingId } = req.params;
+
+        // ==========================================
+        // Validate Booking ID
+        // ==========================================
+        if (!ObjectId.isValid(bookingId)) {
+          return res.status(400).send({
+            message: "Invalid booking ID.",
+          });
+        }
+
+        // ==========================================
+        // Find Booking
+        // ==========================================
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(bookingId),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking not found.",
+          });
+        }
+
+        // ==========================================
+        // Customer can only check their own booking
+        // ==========================================
+        if (booking.customerEmail !== req.decoded_email) {
+          return res.status(403).send({
+            message: "Forbidden access.",
+          });
+        }
+
+        // ==========================================
+        // Find Review
+        // ==========================================
+        const review = await reviewCollection.findOne({
+          bookingId,
+        });
+
+        // ==========================================
+        // Response
+        // ==========================================
+        if (!review) {
+          return res.send({
+            reviewed: false,
+            review: null,
+          });
+        }
+
+        res.send({
+          reviewed: true,
+          review,
+        });
+      } catch (error) {
+        console.error("Get booking review error:", error);
+
+        res.status(500).send({
+          message: "Failed to check booking review.",
+        });
+      }
+    });
+
+    // ===============================
+    //
+    // ===============================
+    app.post("/reviews", verifyFBToken, async (req, res) => {
+      try {
+        const { bookingId, rating, comment } = req.body;
+
+        // ==========================================
+        // Validate Booking ID
+        // ==========================================
+        if (!bookingId || !ObjectId.isValid(bookingId)) {
+          return res.status(400).send({
+            message: "Invalid booking ID.",
+          });
+        }
+
+        // ==========================================
+        // Validate Rating
+        // ==========================================
+        const numericRating = Number(rating);
+
+        if (
+          !Number.isInteger(numericRating) ||
+          numericRating < 1 ||
+          numericRating > 5
+        ) {
+          return res.status(400).send({
+            message: "Rating must be between 1 and 5.",
+          });
+        }
+
+        // ==========================================
+        // Validate Comment
+        // ==========================================
+        if (!comment || !comment.trim()) {
+          return res.status(400).send({
+            message: "Review comment is required.",
+          });
+        }
+
+        if (comment.trim().length < 10) {
+          return res.status(400).send({
+            message: "Review must be at least 10 characters.",
+          });
+        }
+
+        // ==========================================
+        // Find Booking
+        // ==========================================
+        const booking = await bookingCollection.findOne({
+          _id: new ObjectId(bookingId),
+        });
+
+        if (!booking) {
+          return res.status(404).send({
+            message: "Booking not found.",
+          });
+        }
+
+        // ==========================================
+        // Only Booking Owner Can Review
+        // ==========================================
+        if (booking.customerEmail !== req.decoded_email) {
+          return res.status(403).send({
+            message: "You can only review your own booking.",
+          });
+        }
+
+        // ==========================================
+        // Only Completed Booking Can Be Reviewed
+        // ==========================================
+        if (booking.bookingStatus !== "completed") {
+          return res.status(400).send({
+            message: "Only completed bookings can be reviewed.",
+          });
+        }
+
+        // ==========================================
+        // Duplicate Protection
+        // ==========================================
+        const existingReview = await reviewCollection.findOne({
+          bookingId,
+        });
+
+        if (existingReview) {
+          return res.status(409).send({
+            message: "You have already reviewed this booking.",
+          });
+        }
+
+        // ==========================================
+        // Create Review
+        // ==========================================
+        const review = {
+          bookingId,
+
+          customerName: booking.customerName,
+          customerEmail: booking.customerEmail,
+
+          roomId: booking.roomId,
+          roomNumber: booking.roomNumber,
+          roomType: booking.type,
+
+          rating: numericRating,
+          comment: comment.trim(),
+
+          createdAt: new Date().toISOString(),
+        };
+
+        // ==========================================
+        // Save Review
+        // ==========================================
+        const result = await reviewCollection.insertOne(review);
+
+        // ==========================================
+        // Response
+        // ==========================================
+        res.status(201).send({
+          success: true,
+          message: "Review submitted successfully.",
+          reviewId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Create review error:", error);
+
+        // MongoDB duplicate key protection
+        if (error.code === 11000) {
+          return res.status(409).send({
+            message: "You have already reviewed this booking.",
+          });
+        }
+
+        res.status(500).send({
+          message: "Failed to submit review.",
+        });
+      }
+    });
+
+    // ==========================================================================================
     await client.db("admin").command({ ping: 1 });
 
     console.log(
